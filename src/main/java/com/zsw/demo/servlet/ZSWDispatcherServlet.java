@@ -22,6 +22,8 @@ import java.lang.reflect.Method;
 import java.net.URL;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * @author ZhangShaowei on 2019/3/25 10:15
@@ -48,7 +50,9 @@ public class ZSWDispatcherServlet extends HttpServlet {
     /**
      * url 和 method关系
      */
-    private Map<String, Method> handlerMappings = new HashMap<>();
+//    private Map<String, Method> handlerMappings = new HashMap<>();
+
+    private List<Handler> handlerMappings = new ArrayList<>();
 
 
     @Override
@@ -64,22 +68,80 @@ public class ZSWDispatcherServlet extends HttpServlet {
 
     @SneakyThrows
     private void doDispatch(HttpServletRequest request, HttpServletResponse response) {
-        String url = request.getRequestURI();
-        String contextPath = request.getContextPath();
-        url = url.replaceAll(contextPath, "").replaceAll("/+", "/");
-        if (!this.handlerMappings.containsKey(url)) {
+        Handler handler = this.getHandler(request);
+        if (handler == null) {
             response.setStatus(404);
             response.getWriter().write("404 Not Found!");
             return;
         }
 
-        Method method = this.handlerMappings.get(url);
-        String beanName = this.toLowerFirstCase(method.getDeclaringClass().getSimpleName());
-        Map<String, String[]> map = request.getParameterMap();
+        //获得方法的形参列表
+        Class<?>[] paramTypes = handler.getParamTypes();
 
-        Class<?>[] parameterTypes = method.getParameterTypes();
-        Object value = method.invoke(this.ioc.get(beanName), new Object[]{map.get("name")});
+        Object[] paramValues = new Object[paramTypes.length];
+
+        Map<String, String[]> map = request.getParameterMap();
+        for (Map.Entry<String, String[]> parm : map.entrySet()) {
+            String value = Arrays.toString(parm.getValue()).replaceAll("\\[|\\]", "")
+                    .replaceAll("\\s", ",");
+
+            if (!handler.getParamIndexMapping().containsKey(parm.getKey())) {
+                continue;
+            }
+
+            int index = handler.getParamIndexMapping().get(parm.getKey());
+            paramValues[index] = convert(paramTypes[index], value);
+        }
+
+        if (handler.getParamIndexMapping().containsKey(HttpServletRequest.class.getName())) {
+            int reqIndex = handler.getParamIndexMapping().get(HttpServletRequest.class.getName());
+            paramValues[reqIndex] = request;
+        }
+
+        if (handler.getParamIndexMapping().containsKey(HttpServletResponse.class.getName())) {
+            int respIndex = handler.getParamIndexMapping().get(HttpServletResponse.class.getName());
+            paramValues[respIndex] = response;
+        }
+
+        Object value = handler.invoke(paramValues);
         response.getWriter().write(String.valueOf(value));
+    }
+
+
+    //url传过来的参数都是String类型的，HTTP是基于字符串协议
+    //只需要把String转换为任意类型就好
+    private Object convert(Class<?> type, String value) {
+        //如果是int
+        if (Integer.class == type) {
+            return Integer.valueOf(value);
+        } else if (Double.class == type) {
+            return Double.valueOf(value);
+        }
+        //如果还有double或者其他类型，继续加if
+        //这时候，我们应该想到策略模式了
+        //在这里暂时不实现，希望小伙伴自己来实现
+        return value;
+    }
+
+    private Handler getHandler(HttpServletRequest request) {
+        if (this.handlerMappings.isEmpty()) {
+            return null;
+        }
+        Handler h = null;
+        String uri = request.getRequestURI();
+        //处理成相对路径
+        String contextPath = request.getContextPath();
+        uri = uri.replaceAll(contextPath, "").replaceAll("/+", "/");
+
+        for (Handler handler : this.handlerMappings) {
+            Matcher matcher = handler.getPattern().matcher(uri);
+            if (!matcher.matches()) {
+                continue;
+            }
+            h = handler;
+            break;
+        }
+        return h;
     }
 
     @Override
@@ -118,9 +180,9 @@ public class ZSWDispatcherServlet extends HttpServlet {
             }
 
             // 写在类上面的根路径
-            String baseurl = "";
+            String baseUrl = "";
             if (clazz.isAnnotationPresent(ZRequestMapping.class)) {
-                baseurl = clazz.getAnnotation(ZRequestMapping.class).value();
+                baseUrl = clazz.getAnnotation(ZRequestMapping.class).value();
             }
 
             for (Method method : clazz.getMethods()) {
@@ -128,8 +190,9 @@ public class ZSWDispatcherServlet extends HttpServlet {
                     continue;
                 }
                 ZRequestMapping annotation = method.getAnnotation(ZRequestMapping.class);
-                String url = ("/" + baseurl + "/" + annotation.value()).replaceAll("/+", "/");
-                this.handlerMappings.put(url, method);
+                String url = ("/" + baseUrl + "/" + annotation.value()).replaceAll("/+", "/");
+                Pattern pattern = Pattern.compile(url);
+                this.handlerMappings.add(new Handler(pattern, method, object));
                 log.debug("Mapped url={}, method={}", url, method);
             }
 
@@ -253,5 +316,4 @@ public class ZSWDispatcherServlet extends HttpServlet {
 
 
     }
-
 }
