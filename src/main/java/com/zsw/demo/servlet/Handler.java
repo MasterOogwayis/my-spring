@@ -54,6 +54,7 @@ public class Handler {
         for (int i = 0; i < annotations.length; i++) {
             for (Annotation annotation : annotations[i]) {
                 if (annotation instanceof ZRequestParam) {
+                    // 注意啊，jdk无法直接获取参数名称，spring是通过 asm 操作字节码获取的。所以最好吧名字填上去
                     String paramName = ((ZRequestParam) annotation).name();
                     if (StringUtils.isNoneEmpty(paramName)) {
                         this.paramIndexMapping.put(paramName, i);
